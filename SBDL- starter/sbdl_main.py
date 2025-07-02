@@ -1,9 +1,8 @@
 import sys
 from lib import Utils
 from lib. logger import Log4j
-# from lib. dataloader import read_account_file, read_party_file, read_address_file
-from lib.transformation import (data_join, contract_identifier, contract_title, tax_identifier,
-                                part_join, party_relations_address)
+from lib. dataloader import read_account_file
+from lib.transformation import account_details, join_account_party, group_data, keys_struct
 
 if __name__ == '__main__':
 
@@ -19,18 +18,19 @@ if __name__ == '__main__':
     logger = Log4j(spark)
 
     # Read the account file
-    # data_df = data_join()
+    account_df = read_account_file()
+    struct_account = account_details(account_df)
 
-    # data_df.show()
-    # data_df.printSchema()
-    party_df = part_join()
-    df = party_relations_address(party_df)
+    # account and party dataframe join
+    join_df = join_account_party(account_df)
 
-    df.show()
-    df.printSchema()
+    # group of the data
+    group_df = group_data(join_df)
+    group_df = group_df.withColumnRenamed("account_id", "group_account_id")
 
-    # new_df = contract_identifier(data_df)
-    # new_df.show(truncate=False)
+    final_df = struct_account.join(group_df, struct_account.account_id == group_df.group_account_id, how='inner')
 
+    df_keys = keys_struct(account_df)
+    final_df.show(truncate=False)
 
     logger.info("Finished creating Spark Session")

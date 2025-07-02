@@ -1,42 +1,26 @@
-from lib.dataloader import read_address_file, read_party_file, read_account_file
+from lib.dataloader import read_address_file, read_account_file, read_party_file
 import uuid
 
-from pyspark.sql.functions import struct, lit, col, to_json, array
+from pyspark.sql.functions import struct, lit, col, to_json, array, collect_list
 
-
-def data_join():
-    account_df = read_account_file()
-    # account_party_address = party_address_df.join(account_df, party_address_df.account_id == account_df.account_id)
-
-    return account_df
 
 def insert_operation(column, alias):
     return struct(
         lit("INSERT").alias("operation"),
         column.alias("newValue"),
-        lit(None).alias("oldValue"),
     ).alias(alias)
 
+def keys_struct(df):
+    struct_df =  df.select("account_id", struct(lit("contractIdentifier").alias("keyField"),
+                     col("account_id").alias("keyValue")).alias("keys"))
 
-def contract_identifier(df):
-    df_with_audit = df.select("account_id",
-                              insert_operation(col("account_id"), "contractIdentifier"),
-                              insert_operation(col("source_sys"), "sourceSystemIdentifier"),
-                              insert_operation(col("account_start_date"), "contactStartDateTime"),
-                              insert_operation(col("branch_code"), "contractBranchCode"),
-                              insert_operation(col("country"), "contractCountry"),
-                              )
-    df_json = df_with_audit.select("account_id",
-                                   to_json(struct(col("contractIdentifier"),
-                                                  col("sourceSystemIdentifier"),
-                                                  col("contactStartDateTime"),
-                                                  col("contractBranchCode"),
-                                                  col("contractCountry"))).alias("contract_payload")
-                                   )
+    df_json = struct_df.select("account_id", to_json(col("keys")).alias("keys"))
+
     return df_json
 
-def contract_title(df):
-    contract_df = array(
+
+def account_details(df):
+    contract_struct = array(
         struct(
         lit("lgl_ttl_ln_1").alias("contractTitleLineType"),
         col("legal_title_1").alias("contractTitle")),
@@ -45,19 +29,20 @@ def contract_title(df):
             col("legal_title_2").alias("contractTitle")))
 
     # filter condition is left, will take it later..
+    tax_struct = struct(col("tax_id_type").alias("taxIdType"), col("tax_id").alias("taxIdentifier"))
 
-    df_results = df.select("account_id", insert_operation(contract_df, "contractTitle"))
-    df_json = df_results.select("account_id", to_json(struct(col("contractTitle"))).alias("title_value"))
-    return df_json
+    df_contract_title = df.select("account_id",
+                                  insert_operation(col("account_id"), "contractIdentifier"),
+                                  insert_operation(col("source_sys"), "sourceSystemIdentifier"),
+                                  insert_operation(col("account_start_date"), "contactStartDateTime"),
+                                  insert_operation(contract_struct, "contractTitle"),
+                                  insert_operation(tax_struct, "taxIdentifier"),
+                                  insert_operation(col("branch_code"), "contractBranchCode"),
+                                  insert_operation(col("country"), "contractCountry"),
+                                  )
+    return df_contract_title
 
-
-def tax_identifier(df):
-    tax_struct =  struct(col("tax_id_type").alias("taxIdType"), col("tax_id").alias("taxIdentifier"))
-    df_struct = df.select("account_id", insert_operation(tax_struct, "taxIdentifier"))
-    tax_json = df_struct.select("account_id", to_json(struct(col("taxIdentifier"))).alias("tax_value"))
-    return tax_json
-
-def part_join():
+def party_join():
     party_df = read_party_file()
     party_df = party_df.select("party_id", "relation_type",
                                "relation_start_date", col("account_id").alias("party_account_id"))
@@ -73,7 +58,7 @@ def part_join():
                                      how="left")
     return party_address_df
 
-def party_relations_address(df):
+def party_relations_address():
     struct_address = struct(col("address_line_1").alias("addressLine1"),
            col("address_line_2").alias("addressLine2"),
            col("city").alias("addressCity"),
@@ -81,13 +66,32 @@ def party_relations_address(df):
            col("country_of_address").alias("addressCountry"),
            col("address_start_date").alias("addressStartDate"))
 
-    return df.select("party_account_id", "party_id",
+    df = party_join()
+
+    df_prd = df.select("party_account_id", "party_id",
                      insert_operation(col("party_id"), "partyIdentifier"),
                      insert_operation(col("relation_type"), "partyRelationshipType"),
                      insert_operation(col("relation_start_date"), "partyRelationStartDateTime"),
                      insert_operation(struct_address, "partyAddress"),)
+    return df_prd
 
 
+def join_account_party(df):
+    party_df = party_relations_address()
+    join_df = df.join(party_df,df.account_id == party_df.party_account_id, how="left_outer")
+
+    return join_df
+
+def group_data(df):
+    # read account data
+    party_relation_struct = struct(col("partyIdentifier").alias("partyIdentifier"),
+                                   col("partyRelationshipType").alias("partyRelationshipType"),
+                                   col("partyRelationStartDateTime").alias("partyRelationStartDateTime"),
+                                   col("partyAddress").alias("partyAddress"),).alias("partyRelation")
+
+    df_grouped = (df.select("account_id", party_relation_struct).
+                  groupBy("account_id").agg(collect_list("partyRelation").alias("partyRelations")))
+    return df_grouped
 
 def generate_unique_id():
     """
